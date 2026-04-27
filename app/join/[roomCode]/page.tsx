@@ -31,6 +31,12 @@ export default function JoinRoomPage() {
       }
 
       if (data.status !== 'lobby') {
+        // If this player already joined (e.g. they refreshed), send them back in
+        const existingId = localStorage.getItem(`player_${roomCode}`)
+        if (existingId) {
+          router.replace(`/play/${roomCode}?playerId=${existingId}`)
+          return
+        }
         setError('GAME ALREADY STARTED')
         setLoading(false)
         return

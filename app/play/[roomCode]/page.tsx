@@ -26,6 +26,7 @@ export default function PlayPage() {
   const [showResult, setShowResult] = useState(false)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const lastRoundRef = useRef<number>(0)
+  const roundStartedAtRef = useRef<number>(0)
 
   // Get player ID from URL or localStorage
   const playerId = searchParams.get('playerId') ||
@@ -85,7 +86,12 @@ export default function PlayPage() {
         table: 'rooms',
         filter: `id=eq.${roomCode}`,
       }, (payload) => {
-        setRoom(payload.new as Room)
+        const newRoom = payload.new as Room
+        // Capture the DB commit time so all clients share the same round start reference
+        if (newRoom.current_round !== lastRoundRef.current && newRoom.status === 'active') {
+          roundStartedAtRef.current = new Date(payload.commit_timestamp).getTime()
+        }
+        setRoom(newRoom)
       })
       .subscribe()
 
@@ -128,8 +134,13 @@ export default function PlayPage() {
     setMyAnswer(null)
     setLastResult(null)
     setShowResult(false)
-    setTimeLeft(ROUND_DURATION)
-    setTimerActive(true)
+
+    // Sync timer to actual round start (from realtime commit_timestamp when available)
+    const startedAt = roundStartedAtRef.current
+    const elapsed = startedAt > 0 ? Math.floor((Date.now() - startedAt) / 1000) : 0
+    const remaining = Math.max(0, ROUND_DURATION - elapsed)
+    setTimeLeft(remaining)
+    setTimerActive(remaining > 0)
 
     async function loadRoundPlayers() {
       const round = room!.current_round
@@ -179,6 +190,32 @@ export default function PlayPage() {
       if (timerRef.current) clearInterval(timerRef.current)
     }
   }, [timerActive])
+
+  // Re-fetch on tab return — catches missed realtime events when phone was backgrounded
+  useEffect(() => {
+    const handleVisibility = async () => {
+      if (document.visibilityState !== 'visible') return
+
+      const [{ data: roomData }, { data: playerData }] = await Promise.all([
+        supabase.from('rooms').select('*').eq('id', roomCode).single(),
+        playerId ? supabase.from('room_players').select('*').eq('id', playerId).single() : Promise.resolve({ data: null }),
+      ])
+
+      if (roomData) setRoom(roomData as Room)
+      if (playerData) setMyPlayer(playerData as RoomPlayer)
+
+      // Re-sync timer from the stored round start time
+      if (roundStartedAtRef.current > 0) {
+        const elapsed = Math.floor((Date.now() - roundStartedAtRef.current) / 1000)
+        const remaining = Math.max(0, ROUND_DURATION - elapsed)
+        setTimeLeft(remaining)
+        if (remaining === 0) setTimerActive(false)
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
+  }, [roomCode, playerId])
 
   const submitAnswer = async (answer: 'higher' | 'lower') => {
     if (!playerId || !room || myAnswer || submitting || myPlayer?.is_eliminated) return

@@ -30,6 +30,7 @@ export default function HostGamePage() {
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const revealedRef = useRef(false)
+  const roundStartedAtRef = useRef<number>(0)
 
   useEffect(() => {
     setOrigin(window.location.origin)
@@ -108,6 +109,7 @@ export default function HostGamePage() {
       revealedRef.current = false
       setRoundAnswers([])
       setRoundResolved(false)
+      roundStartedAtRef.current = Date.now()
       setTimeLeft(ROUND_DURATION)
       setTimerActive(true)
     }
@@ -166,6 +168,30 @@ export default function HostGamePage() {
   }, [timerActive])
 
   const activePlayers = roomPlayers.filter(p => !p.is_eliminated)
+
+  // Re-fetch on tab return — catches missed realtime events if laptop sleeps
+  useEffect(() => {
+    const handleVisibility = async () => {
+      if (document.visibilityState !== 'visible') return
+
+      const { data: roomData } = await supabase.from('rooms').select('*').eq('id', roomCode).single()
+      if (roomData) setRoom(roomData as Room)
+
+      const { data: playersData } = await supabase.from('room_players').select('*').eq('room_id', roomCode).order('joined_at', { ascending: true })
+      if (playersData) setRoomPlayers(playersData as RoomPlayer[])
+
+      // Re-sync timer
+      if (roundStartedAtRef.current > 0 && !revealedRef.current) {
+        const elapsed = Math.floor((Date.now() - roundStartedAtRef.current) / 1000)
+        const remaining = Math.max(0, ROUND_DURATION - elapsed)
+        setTimeLeft(remaining)
+        if (remaining === 0) setTimerActive(false)
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
+  }, [roomCode])
 
   const handleStartGame = async () => {
     await supabase.from('rooms').update({
